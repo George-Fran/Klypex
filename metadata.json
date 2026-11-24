@@ -1,0 +1,6 @@
+{
+  "name": "MediaDrop Studio",
+  "description": "Generador gratuito de extensiones para Firefox y Chrome para descargar videos y audio de YouTube y otras plataformas en formato MP4 o MP3.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
