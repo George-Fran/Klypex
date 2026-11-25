@@ -51,7 +51,7 @@ export async function downloadBridgeZip(): Promise<string> {
   }
 
   const blob = await zip.generateAsync({ type: 'blob' });
-  const filename = 'mediadrop-puente-local.zip';
+  const filename = 'klypex-motor-local.zip';
   triggerBlobDownload(blob, filename);
   return filename;
 }

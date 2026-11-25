@@ -13,9 +13,34 @@ import { URL, fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 const PORT = Number(process.env.PORT || ${port});
-const HOST = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1');
+const HOST = process.env.HOST || '127.0.0.1';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCAL_BIN_DIR = path.join(__dirname, 'bin');
+
+if (process.env.KLYPEX_LOG_FILE) {
+  try {
+    const logPath = process.env.KLYPEX_LOG_FILE;
+    fs.writeFileSync(logPath, '', 'utf8');
+    const writeLog = (level, args) => {
+      const msg = args
+        .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+        .join(' ');
+      try {
+        fs.appendFileSync(logPath, \`[\${new Date().toLocaleTimeString()}] [\${level}] \${msg}\\n\`, 'utf8');
+      } catch {}
+    };
+    const origLog = console.log.bind(console);
+    const origErr = console.error.bind(console);
+    console.log = (...args) => {
+      origLog(...args);
+      writeLog('INFO', args);
+    };
+    console.error = (...args) => {
+      origErr(...args);
+      writeLog('ERR', args);
+    };
+  } catch {}
+}
 
 // Almacén temporal de archivos listos y trabajos en progreso
 const preparedFiles = new Map();
@@ -1004,30 +1029,158 @@ if __name__ == '__main__':
 
   const startWindows = `@echo off
 chcp 65001 >nul
-title MediaDrop Puente Local (yt-dlp)
+title Klypex Servidor Local
 cd /d "%~dp0"
 if not exist "%~dp0bin" mkdir "%~dp0bin"
 
 where node >nul 2>nul
-if not errorlevel 1 (
-  echo Iniciando puente MediaDrop con Node.js...
-  node bridge.mjs
-  pause
-  exit /b 0
+if errorlevel 1 (
+  where python >nul 2>nul
+  if errorlevel 1 (
+    echo [Error] No se encontro Node.js ni Python en tu PC.
+    echo Descarga Node.js gratis desde https://nodejs.org, instalalo y vuelve a abrir este archivo.
+    pause
+    exit /b 1
+  )
 )
 
-where python >nul 2>nul
-if not errorlevel 1 (
-  echo Iniciando puente MediaDrop con Python...
-  python bridge.py
-  pause
-  exit /b 0
-)
+start "" /min powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0puente-tray.ps1"
+exit /b 0
+`;
 
-echo [Error] No se encontro Node.js ni Python en tu PC.
-echo Instala Node.js (https://nodejs.org) o Python (https://python.org) y vuelve a ejecutar este archivo.
-pause
-exit /b 1
+  const trayPs1 = `$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$logFile = Join-Path $scriptDir 'bridge.log'
+$bridgeMjs = Join-Path $scriptDir 'bridge.mjs'
+$bridgePy = Join-Path $scriptDir 'bridge.py'
+
+# Comprobar si ya está encendido para no duplicarlo
+$alreadyRunning = $false
+try {
+  $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:${port}/health' -TimeoutSec 2 -UseBasicParsing
+  if ($resp.StatusCode -eq 200) { $alreadyRunning = $true }
+} catch {}
+
+# Dibujar icono de bandeja Klypex en memoria
+$bmp = New-Object System.Drawing.Bitmap(16, 16)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.SmoothingMode = 'AntiAlias'
+$brushBg = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(225, 29, 72))
+$g.FillEllipse($brushBg, 1, 1, 14, 14)
+$brushWhite = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+$pts = [System.Drawing.Point[]]@(
+  (New-Object System.Drawing.Point(6, 4)),
+  (New-Object System.Drawing.Point(12, 8)),
+  (New-Object System.Drawing.Point(6, 12))
+)
+$g.FillPolygon($brushWhite, $pts)
+$g.Dispose()
+
+$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$notifyIcon.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+$notifyIcon.Text = 'Klypex - Activo en segundo plano (${port})'
+$notifyIcon.Visible = $true
+
+if ($alreadyRunning) {
+  $notifyIcon.BalloonTipTitle = 'Klypex'
+  $notifyIcon.BalloonTipText = 'Klypex ya se encuentra activo en segundo plano (iconos ocultos).'
+  $notifyIcon.ShowBalloonTip(3000)
+  Start-Sleep -Seconds 3
+  $notifyIcon.Visible = $false
+  $notifyIcon.Dispose()
+  exit
+}
+
+$script:serverProc = $null
+
+function Start-KlypexServer {
+  if ($script:serverProc -and -not $script:serverProc.HasExited) { return }
+  $hasNode = [bool](Get-Command node -ErrorAction SilentlyContinue)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($hasNode) {
+    $psi.FileName = 'node'
+    $psi.Arguments = "\`"$bridgeMjs\`""
+  } else {
+    $psi.FileName = 'python'
+    $psi.Arguments = "\`"$bridgePy\`""
+  }
+  $psi.WorkingDirectory = $scriptDir
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.EnvironmentVariables['KLYPEX_LOG_FILE'] = $logFile
+  $script:serverProc = [System.Diagnostics.Process]::Start($psi)
+}
+
+function Stop-KlypexServer {
+  if ($script:serverProc -and -not $script:serverProc.HasExited) {
+    try { & taskkill /PID $script:serverProc.Id /T /F | Out-Null } catch {}
+    try { $script:serverProc.Kill() } catch {}
+  }
+}
+
+Start-KlypexServer
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$statusItem = $menu.Items.Add('Klypex activo en segundo plano')
+$statusItem.Enabled = $false
+$menu.Items.Add('-') | Out-Null
+
+$logItem = $menu.Items.Add('Ver registro (bridge.log)')
+$logItem.Add_Click({
+  if (Test-Path $logFile) {
+    Start-Process notepad.exe "\`"$logFile\`""
+  }
+})
+
+$restartItem = $menu.Items.Add('Reiniciar Klypex')
+$restartItem.Add_Click({
+  Stop-KlypexServer
+  Start-Sleep -Milliseconds 400
+  Start-KlypexServer
+  $notifyIcon.BalloonTipTitle = 'Klypex'
+  $notifyIcon.BalloonTipText = 'Servidor reiniciado correctamente.'
+  $notifyIcon.ShowBalloonTip(2500)
+})
+
+$exitItem = $menu.Items.Add('Detener y salir')
+$exitItem.Add_Click({
+  Stop-KlypexServer
+  $notifyIcon.Visible = $false
+  $notifyIcon.Dispose()
+  [System.Windows.Forms.Application]::Exit()
+})
+
+$notifyIcon.ContextMenuStrip = $menu
+$notifyIcon.Add_MouseClick({
+  param($sender, $e)
+  if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+    $notifyIcon.BalloonTipTitle = 'Klypex'
+    $notifyIcon.BalloonTipText = 'Activo en segundo plano. Clic derecho aqui para reiniciar o salir.'
+    $notifyIcon.ShowBalloonTip(2500)
+  }
+})
+
+$notifyIcon.BalloonTipTitle = 'Klypex'
+$notifyIcon.BalloonTipText = 'Activo en iconos ocultos. Ya puedes cerrar ventanas y descargar.'
+$notifyIcon.ShowBalloonTip(3500)
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 5000
+$timer.Add_Tick({
+  if ($script:serverProc -and $script:serverProc.HasExited) {
+    $statusItem.Text = 'Klypex detenido (clic en Reiniciar)'
+    $notifyIcon.Text = 'Klypex - Detenido'
+  } else {
+    $statusItem.Text = 'Klypex activo en segundo plano'
+    $notifyIcon.Text = 'Klypex - Activo en segundo plano (${port})'
+  }
+})
+$timer.Start()
+
+[System.Windows.Forms.Application]::Run()
 `;
 
   const startUnix = `#!/usr/bin/env bash
@@ -1052,49 +1205,12 @@ else
 fi
 `;
 
-  const dockerfile = `FROM node:22-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    ffmpeg \\
-    python3 \\
-    python3-pip \\
-    ca-certificates \\
-    curl \\
-    unzip \\
-  && pip3 install --no-cache-dir --break-system-packages -U "yt-dlp[default]" \\
-  && arch="$(uname -m)" \\
-  && if [ "$arch" = "aarch64" ]; then deno_arch="aarch64-unknown-linux-gnu"; else deno_arch="x86_64-unknown-linux-gnu"; fi \\
-  && curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-\${deno_arch}.zip" -o /tmp/deno.zip \\
-  && unzip -q /tmp/deno.zip -d /usr/local/bin \\
-  && chmod +x /usr/local/bin/deno \\
-  && rm -rf /tmp/deno.zip /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY package.json bridge.mjs ./
-
-ENV PORT=4848
-EXPOSE 4848
-
-CMD ["node", "bridge.mjs"]
-`;
-
-  const renderYaml = `services:
-  - type: web
-    name: mediadrop-puente
-    runtime: docker
-    plan: free
-    healthCheckPath: /health
-    envVars:
-      - key: HOST
-        value: 0.0.0.0
-`;
-
   return [
     {
       path: 'puente-local/bridge.mjs',
       content: bridgeMjs,
       language: 'javascript',
-      description: 'Puente Node.js compatible tanto en local (127.0.0.1) como en la nube (Render/Docker) con MP4 H.264 y MP3 con carátula.',
+      description: 'Servidor local Node.js con soporte MP4 H.264, MP3 con carátula ID3v2.3 y registro automático.',
     },
     {
       path: 'puente-local/bridge.py',
@@ -1106,25 +1222,19 @@ CMD ["node", "bridge.mjs"]
       path: 'puente-local/package.json',
       content: packageJson,
       language: 'json',
-      description: 'Manifiesto Node.js ESM para ejecutar el puente local o en servidor.',
-    },
-    {
-      path: 'puente-local/Dockerfile',
-      content: dockerfile,
-      language: 'shell',
-      description: 'Imagen Docker lista para desplegar el servidor puente en Render, Railway o Fly.io con yt-dlp y ffmpeg.',
-    },
-    {
-      path: 'puente-local/render.yaml',
-      content: renderYaml,
-      language: 'shell',
-      description: 'Configuración automática (Blueprint) para desplegar en Render.com.',
+      description: 'Manifiesto Node.js ESM para ejecutar el servidor local.',
     },
     {
       path: 'puente-local/iniciar-windows.bat',
       content: startWindows,
       language: 'shell',
-      description: 'Lanzador limpio para Windows 10/11.',
+      description: 'Lanzador silencioso para Windows 10/11: oculta la terminal y deja Klypex en los iconos ocultos.',
+    },
+    {
+      path: 'puente-local/puente-tray.ps1',
+      content: trayPs1,
+      language: 'shell',
+      description: 'Controlador de bandeja del sistema de Windows (iconos ocultos) para iniciar, reiniciar o salir.',
     },
     {
       path: 'puente-local/iniciar-mac-linux.sh',

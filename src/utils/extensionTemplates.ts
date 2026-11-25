@@ -126,8 +126,8 @@ export function generateExtensionFiles(config: ExtensionConfig): GeneratedFile[]
       </section>
 
       <section id="settingsPanel" class="settings-panel hidden">
-        <label class="field-label" for="bridgeUrlInput">URL Puente Local o Render</label>
-        <input id="bridgeUrlInput" type="url" class="url-input" placeholder="http://127.0.0.1:4848 o https://tu-puente.onrender.com" />
+        <label class="field-label" for="bridgeUrlInput">URL Servicio Local</label>
+        <input id="bridgeUrlInput" type="url" class="url-input" placeholder="http://127.0.0.1:4848" />
 
         <label class="field-label" for="cobaltUrlInput">URL API Cobalt (v10)</label>
         <input id="cobaltUrlInput" type="url" class="url-input" placeholder="https://tu-instancia-cobalt.tld" />
@@ -1151,7 +1151,8 @@ async function appendHistory(entry) {
 
 async function checkBridgeHealth(base) {
   const controller = new AbortController();
-  const timeoutMs = /^https:\\/\\//i.test(base) ? 8000 : 2500;
+  const isRemote = /^https:\\/\\//i.test(base);
+  const timeoutMs = isRemote ? 55000 : 2500;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(base + '/health', { signal: controller.signal });
@@ -1282,7 +1283,10 @@ async function handleStartDownload(payload) {
 
   try {
     if (engine === 'auto') {
-      await setActiveJob({ status: 'running', progress: 2, stage: 'Verificando puente local...' });
+      const connectStage = /^https:\\/\\//i.test(bridgeBase)
+        ? 'Conectando con el servidor...'
+        : 'Verificando puente local...';
+      await setActiveJob({ status: 'running', progress: 2, stage: connectStage });
       const bridgeOk = await checkBridgeHealth(bridgeBase);
       if (bridgeOk) {
         await runBridgeJobInBackground(payload);
@@ -1335,7 +1339,10 @@ async function handleStartDownload(payload) {
     }
 
     if (engine === 'bridge') {
-      await setActiveJob({ status: 'running', progress: 2, stage: 'Verificando puente local...' });
+      const connectStage = /^https:\\/\\//i.test(bridgeBase)
+        ? 'Conectando con el servidor...'
+        : 'Verificando puente local...';
+      await setActiveJob({ status: 'running', progress: 2, stage: connectStage });
       const bridgeOk = await checkBridgeHealth(bridgeBase);
       if (!bridgeOk) {
         await setActiveJob({

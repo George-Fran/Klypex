@@ -22,9 +22,6 @@ import { InstallGuide } from './components/InstallGuide';
 
 type ActiveSection = 'builder' | 'install';
 
-const DEFAULT_BRIDGE_URL =
-  (import.meta.env.VITE_BRIDGE_URL as string | undefined)?.trim() || 'http://127.0.0.1:4848';
-
 const PLATFORM_MATRIX: PlatformCapability[] = [
   {
     platform: 'YouTube',
@@ -82,10 +79,10 @@ export default function App() {
     defaultVideoQuality: '1080',
     defaultAudioBitrate: '320',
     defaultEngine: 'auto',
-    bridgeUrl: DEFAULT_BRIDGE_URL,
+    bridgeUrl: 'http://127.0.0.1:4848',
     cobaltUrl: '',
     accentColor: 'crimson',
-    includeBridgeInZip: false,
+    includeBridgeInZip: true,
   });
 
   const handleDownloadExtension = async () => {
